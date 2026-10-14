@@ -224,6 +224,25 @@ storage class and size, image registry, replica counts, nightly backups.
 > test passing over HTTPS (see "Production rehearsal" below). What the rehearsal cannot cover is
 > Let's Encrypt itself and a public domain.
 
+### One command on the VPS
+
+Any Ubuntu 22.04/24.04 server with 2+ CPUs, 4+ GB of memory and ports 80/443 open, amd64 or
+arm64 (an Oracle Cloud "Always Free" Ampere VM qualifies):
+
+```bash
+git clone https://github.com/roybishal362/Urumi.git && cd Urumi
+EMAIL=you@example.com GROQ_API_KEY=gsk_... ./scripts/vps-up.sh
+```
+
+[scripts/vps-up.sh](scripts/vps-up.sh) installs k3s, Helm and Docker; opens ports 80/443 in the
+host firewall if the image blocks them (Oracle's Ubuntu images do); builds the four images on the
+server, so they match its CPU, and loads them into k3s; installs cert-manager with a Let's
+Encrypt issuer; then installs both charts with `values-prod.yaml`. With no domain of your own it
+uses `store.<ip>.nip.io` and `gateway.<ip>.nip.io`, which resolve to the server and can get
+real certificates. Set `STORE_HOST` and `GATEWAY_HOST` to use your own domain.
+
+### The same steps by hand
+
 ```bash
 # 1. On the VPS: k3s (ships Traefik and the local-path storage class)
 curl -sfL https://get.k3s.io | sh -
@@ -345,7 +364,7 @@ The multi-store bonus is **not** attempted. Of the stand-out items:
 | 7. Scaling | Done: several gateway replicas (production values run two; the smoke test passes against two, over HTTPS). The MCP endpoint is stateless, registry changes made through one replica apply on the others on their next request, and replicas starting together take turns creating the schema. Rate limits per API key and per user for chat (counted per replica). | [upstreams.py](services/gateway/gateway/upstreams.py) `ensure_current`, [ratelimit.py](services/gateway/gateway/ratelimit.py), tests `test_a_change_made_through_one_replica...`, `test_requests_beyond_the_rate_limit...` |
 | 8. Observability | Done, without Prometheus: the dashboard says why an upstream is unreachable (refused, DNS, timeout, HTTP 401, ...) and keeps the last outage after recovery; the audit page shows calls, error rate and median/95th-percentile latency per server. | [upstreams.py](services/gateway/gateway/upstreams.py) `describe_error`, `Outage`; `/api/stats` in [activity.py](services/gateway/gateway/api/activity.py) |
 | 9. Upgrades and rollback | Done: rolling, readiness-gated upgrades with `helm rollback` tested; store versions driven by values; nightly database backups with restore commands; schema additions applied automatically to existing databases. | [docs/DESIGN.md](docs/DESIGN.md#upgrades-and-rollback), [setup.sh](charts/store/files/setup.sh), `templates/backup.yaml` |
-| 1. VPS deployment | Rehearsed, not deployed: production values installed locally behind cert-manager TLS, smoke test passing over HTTPS. No real VPS. | "Production rehearsal" above |
+| 1. VPS deployment | Rehearsed, not yet deployed: production values installed locally behind cert-manager TLS, smoke test passing over HTTPS. One-command VPS setup script provided. | "Production rehearsal" above, [scripts/vps-up.sh](scripts/vps-up.sh) |
 | 3, 4, 5 | Not attempted | |
 
 ## Repository layout
@@ -358,7 +377,7 @@ services/gateway/    The gateway backend: MCP client + MCP server + REST API + c
 services/demo-mcp/   Two small MCP servers used as extra upstreams (Python)
 dashboard/           The React dashboard
 deploy/              k3d cluster config, cert-manager issuer for the VPS, production rehearsal overlays
-scripts/             local-up, smoke test, isolation check
+scripts/             local-up, vps-up, smoke test, isolation check
 docs/                Design note, threat model, demo walkthrough
 .github/workflows/   CI
 ```
