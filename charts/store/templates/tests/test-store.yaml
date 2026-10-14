@@ -1,0 +1,47 @@
+{{- $fullname := include "store.fullname" . -}}
+# `helm test store -n <namespace>` runs this pod once and reports pass or fail.
+# It checks what a shopper and the MCP server depend on: the storefront answers,
+# and the WooCommerce REST API is registered.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $fullname }}-test
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    urumi.dev/helm-test: "true"
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 33
+    runAsGroup: 33
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: test
+      image: "{{ .Values.wordpress.cliImage.repository }}:{{ .Values.wordpress.cliImage.tag }}"
+      command:
+        - sh
+        - -ec
+        - |
+          base=http://{{ $fullname }}-wordpress
+          # Retry for a while: right after an upgrade the network policy that
+          # admits this pod may still be being applied.
+          try() { for i in $(seq 1 10); do "$@" && return 0; sleep 2; done; return 1; }
+          try wget -q -O /dev/null "$base/" && echo "storefront answers"
+          # WordPress escapes slashes in JSON, so the namespace appears as wc\/v3.
+          try sh -c "wget -q -O - '$base/wp-json/' | grep -q 'wc.\{0,2\}/v3'" && echo "WooCommerce REST API is registered"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+      securityContext:
+        {{- include "store.containerSecurityContext" . | nindent 8 }}
+        readOnlyRootFilesystem: true

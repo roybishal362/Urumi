@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "gateway chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": { "type": "object" },
+        "limits": { "type": "object" }
+      }
+    }
+  },
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "scheme", "image", "replicas", "adminEmail", "resources"],
+      "properties": {
+        "host": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "description": "Public hostname, without scheme or path" },
+        "scheme": { "enum": ["http", "https"] },
+        "image": { "$ref": "#/definitions/image" },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "adminEmail": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+$" },
+        "callTimeoutSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "connectTimeoutSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "refreshIntervalSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "rateLimits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mcpPerMinute": { "type": "integer", "minimum": 0 },
+            "chatPerMinute": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "internalHostSuffixes": { "type": "array", "items": { "type": "string" } },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "required": ["image", "replicas", "resources"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "postgres": {
+      "type": "object",
+      "required": ["image", "persistence", "resources"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "persistence": {
+          "type": "object",
+          "required": ["size"],
+          "properties": {
+            "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+            "storageClass": { "type": "string" }
+          }
+        },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseUrl", "model"],
+      "properties": {
+        "baseUrl": { "type": "string", "pattern": "^https?://" },
+        "model": { "type": "string", "minLength": 1 },
+        "maxTokens": { "type": "integer", "minimum": 64 },
+        "reasoningEffort": { "enum": ["", "low", "medium", "high"] },
+        "apiKey": { "type": "string" },
+        "existingSecret": { "type": "string" }
+      }
+    },
+    "demoServers": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": { "$ref": "#/definitions/image" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "seedServers": {
+      "type": "object",
+      "properties": {
+        "woo": {
+          "type": "object",
+          "required": ["enabled"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "name": { "type": "string" },
+            "slug": { "type": "string", "pattern": "^[a-z][a-z0-9]{1,15}$" },
+            "url": { "type": "string", "pattern": "^https?://" },
+            "token": { "type": "string" },
+            "tokenSecret": {
+              "type": "object",
+              "properties": {
+                "namespace": { "type": "string" },
+                "name": { "type": "string" },
+                "key": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "required": ["enabled", "className", "tls"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string", "minLength": 1 },
+        "annotations": { "type": "object" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" },
+            "clusterIssuer": { "type": "string" },
+            "redirectHttp": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressController": {
+          "type": "object",
+          "required": ["namespace", "podLabels"],
+          "properties": {
+            "namespace": { "type": "string" },
+            "podLabels": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "schedule": { "type": "string", "minLength": 9 },
+        "keep": { "type": "integer", "minimum": 1 },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+            "storageClass": { "type": "string" }
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "adminPassword": { "type": "string" },
+        "sessionSecret": { "type": "string" },
+        "encryptionKey": { "type": "string" },
+        "postgresPassword": { "type": "string" },
+        "shippingApiKey": { "type": "string" }
+      }
+    }
+  }
+}

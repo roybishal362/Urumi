@@ -1,0 +1,13 @@
+# Local Kubernetes (k3d). *.localtest.me resolves to 127.0.0.1 in public DNS, so
+# no hosts-file edits are needed; k3d publishes the ingress on host port 80.
+gateway:
+  host: gateway.localtest.me
+  scheme: http
+  # Check upstreams more often locally, so a killed pod shows up on the
+  # dashboard even though Kubernetes replaces it within seconds.
+  refreshIntervalSeconds: 2
+
+ingress:
+  className: traefik
+  tls:
+    enabled: false

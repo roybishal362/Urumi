@@ -1,0 +1,132 @@
+{{- if .Values.backup.enabled -}}
+{{- $fullname := include "store.fullname" . -}}
+# A nightly, consistent dump of the store's database, kept on its own volume.
+# Restore with:
+#   gunzip -c <file> | kubectl -n <ns> exec -i <release>-mariadb-0 -- \
+#     sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" wordpress'
+# Uploaded images live on the WordPress volume and need a volume snapshot.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-backups
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.backup.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.persistence.size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}-db-backup
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "store.labels" . | nindent 12 }}
+            app.kubernetes.io/component: db-backup
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: dump
+              image: "{{ .Values.mariadb.image.repository }}:{{ .Values.mariadb.image.tag }}"
+              imagePullPolicy: {{ .Values.mariadb.image.pullPolicy }}
+              env:
+                # Read by the client, so the password never appears in the process list.
+                - name: MYSQL_PWD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $fullname }}-db
+                      key: mariadb-root-password
+                - name: KEEP
+                  value: {{ .Values.backup.keep | quote }}
+              command:
+                - sh
+                - -ec
+                - |
+                  name=/backups/wordpress-$(date -u +%Y%m%d-%H%M%S).sql
+                  trap 'rm -f "$name.partial"' EXIT
+                  # Dump to a file first, not through a pipe, so a failed dump
+                  # fails the job instead of producing an empty archive.
+                  # --single-transaction: a consistent snapshot without locking the shop.
+                  mariadb-dump -h {{ $fullname }}-mariadb -u root --single-transaction --routines wordpress > "$name.partial"
+                  # mariadb-dump writes this line last; without it the dump is incomplete.
+                  tail -n 1 "$name.partial" | grep -q "Dump completed" || { echo "dump is incomplete" >&2; exit 1; }
+                  gzip -c "$name.partial" > "$name.gz"
+                  rm -f "$name.partial"
+                  echo "wrote $name.gz ($(wc -c < "$name.gz") bytes)"
+                  # Rotate only after a good dump exists, so failures never cost old backups.
+                  ls -1t /backups/wordpress-*.sql.gz | tail -n +$((KEEP + 1)) | xargs -r rm --
+                  echo "kept the newest $KEEP:"; ls -1t /backups/
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                {{- include "store.containerSecurityContext" . | nindent 16 }}
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ $fullname }}-backups
+            - name: tmp
+              emptyDir: {}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-db-backup
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "store.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: db-backup
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: mariadb
+      ports:
+        - protocol: TCP
+          port: 3306
+    {{- include "store.dnsEgress" . | nindent 4 }}
+{{- end }}
+{{- end }}

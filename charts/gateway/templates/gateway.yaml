@@ -1,0 +1,172 @@
+{{- $fullname := include "gateway.fullname" . -}}
+{{- $suffixes := append .Values.gateway.internalHostSuffixes (printf "%s.svc.cluster.local" .Release.Namespace) -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    {{- include "gateway.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.labels" . | nindent 8 }}
+        app.kubernetes.io/component: gateway
+      annotations:
+        # Roll the pods when configuration that reaches them through Secrets changes.
+        checksum/config: {{ toJson (dict "llm" .Values.llm "seed" .Values.seedServers "secrets" .Values.secrets "demo" .Values.demoServers.enabled) | sha256sum }}
+    spec:
+      # The gateway never talks to the Kubernetes API, so it gets no token for it.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "gateway.podSecurityContext" (dict "uid" 10001) | nindent 8 }}
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          command:
+            - sh
+            - -c
+            - until pg_isready -h {{ $fullname }}-postgres -p 5432 -U gateway -d gateway; do sleep 2; done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            {{- include "gateway.containerSecurityContext" . | nindent 12 }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          env:
+            - name: PUBLIC_URL
+              value: {{ include "gateway.publicUrl" . | quote }}
+            - name: COOKIE_SECURE
+              value: {{ eq .Values.gateway.scheme "https" | quote }}
+            - name: DB_HOST
+              value: {{ $fullname }}-postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: gateway
+            - name: DB_USER
+              value: gateway
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-app
+                  key: postgres-password
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-app
+                  key: session-secret
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-app
+                  key: encryption-key
+            - name: BOOTSTRAP_ADMIN_EMAIL
+              value: {{ .Values.gateway.adminEmail | quote }}
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-app
+                  key: admin-password
+            - name: SEED_SERVERS_FILE
+              value: /etc/gateway/seed/servers.json
+            - name: UPSTREAM_CALL_TIMEOUT
+              value: {{ .Values.gateway.callTimeoutSeconds | quote }}
+            - name: UPSTREAM_CONNECT_TIMEOUT
+              value: {{ .Values.gateway.connectTimeoutSeconds | quote }}
+            - name: UPSTREAM_REFRESH_INTERVAL
+              value: {{ .Values.gateway.refreshIntervalSeconds | quote }}
+            - name: MCP_RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.gateway.rateLimits.mcpPerMinute | quote }}
+            - name: CHAT_RATE_LIMIT_PER_MINUTE
+              value: {{ .Values.gateway.rateLimits.chatPerMinute | quote }}
+            - name: INTERNAL_HOST_SUFFIXES
+              value: {{ join "," $suffixes | quote }}
+            - name: LLM_BASE_URL
+              value: {{ .Values.llm.baseUrl | quote }}
+            - name: LLM_MODEL
+              value: {{ .Values.llm.model | quote }}
+            - name: LLM_MAX_TOKENS
+              value: {{ .Values.llm.maxTokens | quote }}
+            - name: LLM_REASONING_EFFORT
+              value: {{ .Values.llm.reasoningEffort | quote }}
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-llm" $fullname) .Values.llm.existingSecret }}
+                  key: api-key
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8080
+          # On shutdown, keep serving for a few seconds: the ingress controller
+          # needs that long to learn this pod is going away. Without it, a
+          # rollout drops the requests still being routed here.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          # Ready: started up and able to reach its database.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          # Live: the process answers. Deliberately independent of the database
+          # and of every upstream, so an outage elsewhere never restarts it.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext:
+            {{- include "gateway.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: seed
+              mountPath: /etc/gateway/seed
+              readOnly: true
+      volumes:
+        - name: seed
+          secret:
+            secretName: {{ $fullname }}-seed

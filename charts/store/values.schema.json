@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "store chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": { "type": "object" },
+        "limits": { "type": "object" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "required": ["size"],
+      "properties": {
+        "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+        "storageClass": { "type": "string" }
+      }
+    },
+    "podLabels": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } }
+  },
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "store": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "scheme", "title", "adminUser", "adminEmail"],
+      "properties": {
+        "host": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$", "description": "Public hostname, without scheme or path" },
+        "scheme": { "enum": ["http", "https"] },
+        "title": { "type": "string", "minLength": 1 },
+        "adminUser": { "type": "string", "minLength": 1 },
+        "adminEmail": { "type": "string", "pattern": "^[^@\\s]+@[^@\\s]+$" },
+        "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+        "country": { "type": "string" },
+        "timezone": { "type": "string" },
+        "seedSampleProducts": { "type": "boolean" }
+      }
+    },
+    "wordpress": {
+      "type": "object",
+      "required": ["image", "cliImage", "woocommerceVersion", "persistence", "resources"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "cliImage": { "$ref": "#/definitions/image" },
+        "coreVersion": { "type": "string" },
+        "woocommerceVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(\\.[0-9]+)?$" },
+        "persistence": { "$ref": "#/definitions/persistence" },
+        "resources": { "$ref": "#/definitions/resources" },
+        "cliResources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "mariadb": {
+      "type": "object",
+      "required": ["image", "persistence", "resources"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "persistence": { "$ref": "#/definitions/persistence" },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "wooMcp": {
+      "type": "object",
+      "required": ["image", "replicas", "resources"],
+      "properties": {
+        "image": { "$ref": "#/definitions/image" },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "requestTimeoutSeconds": { "type": "number", "exclusiveMinimum": 0 },
+        "resources": { "$ref": "#/definitions/resources" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "required": ["enabled", "className", "tls"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string", "minLength": 1 },
+        "annotations": { "type": "object" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "secretName": { "type": "string" },
+            "clusterIssuer": { "type": "string" },
+            "redirectHttp": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressController": {
+          "type": "object",
+          "required": ["namespace", "podLabels"],
+          "properties": { "namespace": { "type": "string" }, "podLabels": { "$ref": "#/definitions/podLabels" } }
+        },
+        "gateway": {
+          "type": "object",
+          "required": ["namespace", "podLabels"],
+          "properties": { "namespace": { "type": "string" }, "podLabels": { "$ref": "#/definitions/podLabels" } }
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "schedule": { "type": "string", "minLength": 9 },
+        "keep": { "type": "integer", "minimum": 1 },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "size": { "type": "string", "pattern": "^[0-9]+(Mi|Gi|Ti)$" },
+            "storageClass": { "type": "string" }
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mariadbRootPassword": { "type": "string" },
+        "mariadbPassword": { "type": "string" },
+        "wpAdminPassword": { "type": "string" },
+        "wcConsumerKey": { "type": "string" },
+        "wcConsumerSecret": { "type": "string" },
+        "mcpAuthToken": { "type": "string" }
+      }
+    }
+  }
+}

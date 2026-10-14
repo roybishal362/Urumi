@@ -1,0 +1,80 @@
+{{- $fullname := include "gateway.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-dashboard
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    {{- include "gateway.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+---
+# The dashboard is static files behind nginx. It holds no secrets and calls
+# nothing itself: the browser talks to the gateway's API on the same hostname.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-dashboard
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+spec:
+  replicas: {{ .Values.dashboard.replicas }}
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dashboard
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.labels" . | nindent 8 }}
+        app.kubernetes.io/component: dashboard
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # uid 101 is "nginx" in the nginx-unprivileged image.
+        {{- include "gateway.podSecurityContext" (dict "uid" 101) | nindent 8 }}
+      containers:
+        - name: dashboard
+          image: "{{ .Values.dashboard.image.repository }}:{{ .Values.dashboard.image.tag }}"
+          imagePullPolicy: {{ .Values.dashboard.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          # On shutdown, keep serving for a few seconds: the ingress controller
+          # needs that long to learn this pod is going away. Without it, a
+          # rollout drops the requests still being routed here.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+          securityContext:
+            {{- include "gateway.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            # nginx keeps its pid file and temporary files here.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

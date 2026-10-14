@@ -1,0 +1,142 @@
+# Defaults for one store. Environment differences live in values-local.yaml and
+# values-prod.yaml; nothing in the templates is environment specific.
+
+nameOverride: ""
+fullnameOverride: ""
+
+store:
+  # Public hostname of the storefront. This is the Ingress host and the URL
+  # WordPress believes it lives at.
+  host: store.localtest.me
+  # http locally, https when TLS terminates at the ingress controller.
+  scheme: http
+  title: Urumi Demo Store
+  adminUser: admin
+  adminEmail: admin@example.com
+  currency: USD
+  # WooCommerce "country:state" base location.
+  country: "US:CA"
+  timezone: Asia/Kolkata
+  # Create two sample products on first install so the storefront is not empty.
+  seedSampleProducts: true
+
+wordpress:
+  image:
+    repository: wordpress
+    tag: 7.1.3-php8.3-apache
+    pullPolicy: IfNotPresent
+  # Target WordPress core version. The official image only copies core into an
+  # empty volume, so the setup container upgrades an existing install to this
+  # version when it is behind. Keep it in step with image.tag.
+  coreVersion: "7.1.3"
+  # WP-CLI runs next to WordPress in the same pod and performs the one-time
+  # install and the idempotent store configuration.
+  cliImage:
+    repository: wordpress
+    tag: cli-2.12-php8.3
+    pullPolicy: IfNotPresent
+  woocommerceVersion: "11.2.1"
+  persistence:
+    size: 5Gi
+    # Empty string means "use the cluster's default StorageClass"
+    # (local-path on k3d and k3s).
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+  cliResources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 768Mi
+
+mariadb:
+  image:
+    repository: mariadb
+    tag: "11.8.9"
+    pullPolicy: IfNotPresent
+  persistence:
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+wooMcp:
+  image:
+    repository: urumi/woo-mcp
+    tag: 0.1.0
+    pullPolicy: IfNotPresent
+  replicas: 1
+  # Timeout for one WooCommerce REST call made on behalf of a tool call.
+  requestTimeoutSeconds: 20
+  resources:
+    requests:
+      cpu: 25m
+      memory: 96Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+ingress:
+  enabled: true
+  # traefik is what k3d and k3s ship with.
+  className: traefik
+  annotations: {}
+  tls:
+    enabled: false
+    # Secret holding the certificate. With clusterIssuer set, cert-manager
+    # creates and renews it.
+    secretName: ""
+    clusterIssuer: ""
+    # With TLS on, answer http:// with a permanent redirect to https://
+    # (Traefik only).
+    redirectHttp: false
+
+networkPolicy:
+  enabled: true
+  # Which pods count as "the ingress controller". Only they may reach WordPress
+  # from outside the namespace.
+  ingressController:
+    namespace: kube-system
+    podLabels:
+      app.kubernetes.io/name: traefik
+  # Which pods count as "the gateway". Only they may reach the WooCommerce MCP
+  # server.
+  gateway:
+    namespace: gateway
+    podLabels:
+      app.kubernetes.io/component: gateway
+
+# Nightly database dumps to a volume of their own (see templates/backup.yaml).
+backup:
+  enabled: false
+  # Cron syntax, in the cluster's time zone (UTC on k3s).
+  schedule: "0 2 * * *"
+  # How many dumps to keep.
+  keep: 7
+  persistence:
+    size: 5Gi
+    storageClass: ""
+
+# Every value here is optional. Left empty, the chart generates a random value
+# on first install and keeps it on upgrade. Set a value to supply your own, for
+# example from a secrets manager at deploy time. Never commit real values.
+secrets:
+  mariadbRootPassword: ""
+  mariadbPassword: ""
+  wpAdminPassword: ""
+  wcConsumerKey: ""
+  wcConsumerSecret: ""
+  # Bearer token the gateway must present to the WooCommerce MCP server.
+  mcpAuthToken: ""

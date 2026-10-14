@@ -1,0 +1,59 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullname := include "store.fullname" . -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+  {{- $redirect := and .Values.ingress.tls.enabled .Values.ingress.tls.redirectHttp (eq .Values.ingress.className "traefik") }}
+  {{- if or .Values.ingress.annotations .Values.ingress.tls.clusterIssuer $redirect }}
+  annotations:
+    {{- with .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ . | quote }}
+    {{- end }}
+    {{- if $redirect }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-https-redirect@kubernetescrd" .Release.Namespace $fullname }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.store.host | quote }}
+      secretName: {{ default (printf "%s-tls" $fullname) .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.store.host | quote }}
+      http:
+        paths:
+          # Only WordPress is routed. There is deliberately no rule for the
+          # MCP server.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-wordpress
+                port:
+                  name: http
+{{- if and .Values.ingress.tls.enabled .Values.ingress.tls.redirectHttp (eq .Values.ingress.className "traefik") }}
+---
+# Sends plain http:// requests to https:// with a permanent redirect. Traefik
+# middleware, because Traefik is the ingress controller k3s ships with.
+# cert-manager's HTTP challenge uses its own Ingress, so it is not redirected.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $fullname }}-https-redirect
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+{{- end }}
+{{- end }}

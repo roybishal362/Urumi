@@ -1,0 +1,226 @@
+{{- $fullname := include "store.fullname" . -}}
+{{- $setupRev := printf "%s|%s|%s|%s" (.Files.Get "files/setup.sh") (toJson .Values.store) .Values.wordpress.woocommerceVersion .Values.wordpress.coreVersion | sha256sum | trunc 16 -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-wordpress
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.wordpress.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.wordpress.persistence.size }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-wordpress
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  selector:
+    {{- include "store.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-wordpress
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wordpress
+spec:
+  replicas: 1
+  # The volume is ReadWriteOnce, so the old pod must release it before the new
+  # one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "store.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: wordpress
+  template:
+    metadata:
+      labels:
+        {{- include "store.labels" . | nindent 8 }}
+        app.kubernetes.io/component: wordpress
+      annotations:
+        checksum/setup: {{ include (print $.Template.BasePath "/configmap-setup.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # www-data in the Debian-based WordPress image. The WP-CLI container
+        # runs as the same uid so both can write the shared volume.
+        runAsNonRoot: true
+        runAsUser: 33
+        runAsGroup: 33
+        fsGroup: 33
+        seccompProfile:
+          type: RuntimeDefault
+        # Lets Apache bind port 80 without root or NET_BIND_SERVICE.
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: "0"
+      initContainers:
+        # hostPath-backed volumes (local-path on k3s) come up owned by root and
+        # ignore fsGroup, and WordPress's first-start copy needs to own the
+        # mount point. This hands just that one directory to www-data. It is
+        # the only root process in the chart, and CHOWN is its only capability.
+        - name: volume-permissions
+          image: "{{ .Values.wordpress.image.repository }}:{{ .Values.wordpress.image.tag }}"
+          imagePullPolicy: {{ .Values.wordpress.image.pullPolicy }}
+          command: ["chown", "33:33", "/var/www/html"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: html
+              mountPath: /var/www/html
+      containers:
+        - name: wordpress
+          image: "{{ .Values.wordpress.image.repository }}:{{ .Values.wordpress.image.tag }}"
+          imagePullPolicy: {{ .Values.wordpress.image.pullPolicy }}
+          env:
+            {{- include "store.wordpressEnv" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 80
+          # First start copies WordPress core into the empty volume.
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          # A small public REST response: it needs PHP and the database, and
+          # unlike the login page it never redirects when the site is https.
+          readinessProbe:
+            httpGet:
+              path: /wp-json/wp/v2/types/post
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+          # A static file: tells us Apache is serving without depending on PHP
+          # or the database, so a slow database never restarts WordPress.
+          livenessProbe:
+            httpGet:
+              path: /wp-includes/images/blank.gif
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.wordpress.resources | nindent 12 }}
+          securityContext:
+            {{- include "store.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: html
+              mountPath: /var/www/html
+        - name: wp-cli
+          image: "{{ .Values.wordpress.cliImage.repository }}:{{ .Values.wordpress.cliImage.tag }}"
+          imagePullPolicy: {{ .Values.wordpress.cliImage.pullPolicy }}
+          command: ["/bin/sh", "/scripts/setup.sh"]
+          env:
+            {{- include "store.wordpressEnv" . | nindent 12 }}
+            - name: HOME
+              value: /tmp
+            - name: WP_CLI_CACHE_DIR
+              value: /tmp/wp-cli-cache
+            - name: SETUP_REV
+              value: {{ $setupRev | quote }}
+            - name: WP_URL
+              value: {{ include "store.publicUrl" . | quote }}
+            - name: WP_TITLE
+              value: {{ .Values.store.title | quote }}
+            - name: WP_CORE_VERSION
+              value: {{ .Values.wordpress.coreVersion | quote }}
+            - name: WC_VERSION
+              value: {{ .Values.wordpress.woocommerceVersion | quote }}
+            - name: STORE_CURRENCY
+              value: {{ .Values.store.currency | quote }}
+            - name: STORE_COUNTRY
+              value: {{ .Values.store.country | quote }}
+            - name: STORE_TIMEZONE
+              value: {{ .Values.store.timezone | quote }}
+            - name: SEED_SAMPLE_PRODUCTS
+              value: {{ .Values.store.seedSampleProducts | quote }}
+            - name: WP_ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-wp-admin
+                  key: username
+            - name: WP_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-wp-admin
+                  key: email
+            - name: WP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-wp-admin
+                  key: password
+            - name: WC_CONSUMER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-wc-api
+                  key: consumer-key
+            - name: WC_CONSUMER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-wc-api
+                  key: consumer-secret
+          # Ready only once setup.sh has finished, which keeps the whole pod
+          # out of the Service until the store is fully configured.
+          readinessProbe:
+            exec:
+              command: ["test", "-f", "/tmp/setup-complete"]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "kill -0 1"]
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.wordpress.cliResources | nindent 12 }}
+          securityContext:
+            {{- include "store.containerSecurityContext" . | nindent 12 }}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: html
+              mountPath: /var/www/html
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: cli-tmp
+              mountPath: /tmp
+      volumes:
+        - name: html
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-wordpress
+        - name: scripts
+          configMap:
+            name: {{ $fullname }}-setup
+        - name: cli-tmp
+          emptyDir: {}

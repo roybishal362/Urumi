@@ -1,0 +1,182 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- $fullname := include "gateway.fullname" . -}}
+# Everything in this namespace is closed by default, in both directions. The
+# policies below open exactly these paths:
+#
+#   ingress controller -> gateway, dashboard
+#   gateway -> Postgres, upstream MCP servers (in or out of the cluster), the LLM API
+#
+# Nothing but the gateway can reach Postgres or an upstream MCP server.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default-deny
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- include "gateway.ingressControllerPods" . | nindent 8 }}
+        {{- include "gateway.helmTestPods" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    {{- include "gateway.dnsEgress" . | nindent 4 }}
+    # The gateway has to reach upstream MCP servers wherever an admin registers
+    # them, and the LLM provider, so its egress is open, with one exception:
+    # the link-local range, which is where cloud metadata services live. This
+    # backs up the URL checks the gateway makes itself.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-dashboard
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dashboard
+  policyTypes:
+    - Ingress
+    - Egress
+  # Serves static files. Accepts the ingress controller and calls nothing.
+  ingress:
+    - from:
+        {{- include "gateway.ingressControllerPods" . | nindent 8 }}
+        {{- include "gateway.helmTestPods" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-postgres
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- include "gateway.gatewayPods" . | nindent 8 }}
+        # The nightly backup job.
+        - podSelector:
+            matchLabels:
+              {{- include "gateway.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: db-backup
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- if .Values.demoServers.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-upstream-mcp
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      urumi.dev/role: upstream-mcp
+  policyTypes:
+    - Ingress
+    - Egress
+  # Upstream MCP servers accept the gateway and nothing else, and have no
+  # egress at all: a compromised one cannot call out or move sideways.
+  ingress:
+    - from:
+        {{- include "gateway.gatewayPods" . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 8000
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-helm-test
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      urumi.dev/helm-test: "true"
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- include "gateway.gatewayPods" . | nindent 8 }}
+        - podSelector:
+            matchLabels:
+              {{- include "gateway.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: dashboard
+      ports:
+        - protocol: TCP
+          port: 8080
+    {{- include "gateway.dnsEgress" . | nindent 4 }}
+{{- if .Values.ingress.tls.clusterIssuer }}
+---
+# cert-manager proves domain ownership by answering an HTTP challenge from a
+# short-lived pod in this namespace. Without this rule the default-deny policy
+# would block the ingress controller from reaching it, and no certificate
+# would ever be issued.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-acme-solver
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressController.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8089
+{{- end }}
+{{- end }}

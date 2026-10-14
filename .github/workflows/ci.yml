@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  # The end-to-end job is heavier (a whole cluster), so it runs on request.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r services/gateway/requirements-dev.txt -r services/woo-mcp/requirements-dev.txt
+      - name: Gateway (unit + end-to-end against real MCP servers on localhost)
+        working-directory: services/gateway
+        run: python -m pytest -q
+      - name: WooCommerce MCP server
+        working-directory: services/woo-mcp
+        run: python -m pytest -q
+
+  dashboard:
+    name: Dashboard build and lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      - run: npm run build
+      - run: npx oxlint --deny-warnings
+
+  helm:
+    name: Helm lint and render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and render every chart with every values file
+        run: |
+          for chart in store gateway; do
+            for values in local prod; do
+              helm lint "charts/$chart" -f "charts/$chart/values-$values.yaml"
+              helm template "$chart" "charts/$chart" -f "charts/$chart/values-$values.yaml" > /dev/null
+            done
+            helm template "$chart" "charts/$chart" -f "charts/$chart/values-prod.yaml" \
+              -f "deploy/prod-rehearsal/$chart-values.yaml" > /dev/null
+          done
+      - name: The values schema rejects a bad value
+        run: |
+          if helm template s charts/store --set store.scheme=htps > /dev/null 2>&1; then
+            echo "schema accepted an invalid scheme" && exit 1
+          fi
+
+  images:
+    name: Build images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          docker build -t urumi/woo-mcp:ci   services/woo-mcp
+          docker build -t urumi/gateway:ci   services/gateway
+          docker build -t urumi/demo-mcp:ci  services/demo-mcp
+          docker build -t urumi/dashboard:ci dashboard
+
+  end-to-end:
+    name: Deploy to k3d and run the definition of done
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install k3d
+        run: curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+      - name: Bring everything up (same script as local)
+        run: ./scripts/local-up.sh
+      - name: helm test
+        run: |
+          helm test store -n store --logs
+          helm test gateway -n gateway --logs
+      - name: Definition-of-done smoke test
+        run: |
+          pip install mcp==2.3.0 httpx2==2.13.1
+          python scripts/smoke_test.py
+      - name: Network isolation checks
+        run: ./scripts/check_isolation.sh
+      - name: Pod state on failure
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl -n store logs deploy/store-wordpress -c wp-cli --tail=50 || true
+          kubectl -n gateway logs deploy/gateway --tail=100 || true

@@ -1,0 +1,163 @@
+# Defaults for the gateway. Environment differences live in values-local.yaml
+# and values-prod.yaml; nothing in the templates is environment specific.
+
+nameOverride: ""
+fullnameOverride: ""
+
+gateway:
+  # Public hostname for both the dashboard and the MCP endpoint (/mcp).
+  host: gateway.localtest.me
+  # http locally, https when TLS terminates at the ingress controller.
+  scheme: http
+  image:
+    repository: urumi/gateway
+    tag: 0.1.0
+    pullPolicy: IfNotPresent
+  # More than one replica is supported: the MCP endpoint keeps no session
+  # state, and each replica follows the server registry in the database.
+  replicas: 1
+  # The first admin, created on first start. The password is generated into a
+  # Secret unless secrets.adminPassword is set.
+  adminEmail: admin@example.com
+  # Longest a single tool call may take before the caller gets a timeout error.
+  callTimeoutSeconds: 30
+  # Longest a connection attempt to an upstream (connect + list tools) may take.
+  connectTimeoutSeconds: 8
+  # How often each upstream is health-checked and its tool list refreshed.
+  # This is also the longest it takes the dashboard to notice a dead server.
+  refreshIntervalSeconds: 5
+  # Requests per minute allowed per API key on /mcp, and chat messages per
+  # minute per user. Counted per replica. 0 turns a limit off.
+  rateLimits:
+    mcpPerMinute: 240
+    chatPerMinute: 12
+  # Hostname suffixes allowed to resolve to private addresses when an admin
+  # adds a server by URL. The namespace of this release is always included.
+  internalHostSuffixes:
+    - store.svc.cluster.local
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 384Mi
+
+dashboard:
+  image:
+    repository: urumi/dashboard
+    tag: 0.1.0
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      cpu: 200m
+      memory: 96Mi
+
+postgres:
+  image:
+    repository: postgres
+    tag: 17.11-alpine
+    pullPolicy: IfNotPresent
+  persistence:
+    size: 2Gi
+    # Empty string means "use the default StorageClass of the cluster".
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 384Mi
+
+# The model behind the chat agent. Any OpenAI-compatible chat completions API works.
+llm:
+  baseUrl: https://api.groq.com/openai/v1
+  model: openai/gpt-oss-120b
+  # Longest reply per step. Providers count it against per-minute token limits.
+  maxTokens: 1024
+  # "low" keeps gpt-oss models from spending the free tier on thinking. Set to
+  # "" when switching to a model that does not accept the parameter.
+  reasoningEffort: low
+  # Supply at install time (--set llm.apiKey=...). It is written to a Secret
+  # and nowhere else. Never commit it.
+  apiKey: ""
+  # Or name a Secret you created yourself that has an "api-key" entry.
+  existingSecret: ""
+
+# Two small MCP servers (currency conversion, shipping quotes) so the gateway
+# has more than one upstream to aggregate.
+demoServers:
+  enabled: true
+  image:
+    repository: urumi/demo-mcp
+    tag: 0.1.0
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 192Mi
+
+# Servers registered automatically the first time the gateway starts.
+seedServers:
+  woo:
+    enabled: true
+    name: WooCommerce
+    slug: woo
+    url: http://store-woo-mcp.store.svc.cluster.local:8000/mcp
+    # The bearer token the WooCommerce MCP server expects. Leave empty to have
+    # Helm read it from the Secret of the store release at install time.
+    token: ""
+    tokenSecret:
+      namespace: store
+      name: store-woo-mcp-auth
+      key: token
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations: {}
+  tls:
+    enabled: false
+    secretName: ""
+    clusterIssuer: ""
+    # With TLS on, answer http:// with a permanent redirect to https://
+    # (Traefik only).
+    redirectHttp: false
+
+networkPolicy:
+  enabled: true
+  ingressController:
+    namespace: kube-system
+    podLabels:
+      app.kubernetes.io/name: traefik
+
+# Nightly database dumps to a volume of their own (see templates/backup.yaml).
+backup:
+  enabled: false
+  # Cron syntax, in the cluster's time zone (UTC on k3s).
+  schedule: "0 2 * * *"
+  # How many dumps to keep.
+  keep: 7
+  persistence:
+    size: 5Gi
+    storageClass: ""
+
+# Every value here is optional. Left empty, the chart generates a random value
+# on first install and keeps it on upgrade. Never commit real values.
+secrets:
+  adminPassword: ""
+  # Signs dashboard session cookies.
+  sessionSecret: ""
+  # Encrypts upstream credentials in the database. Changing it makes stored
+  # credentials unreadable; they then have to be entered again.
+  encryptionKey: ""
+  postgresPassword: ""
+  shippingApiKey: ""

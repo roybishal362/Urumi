@@ -1,0 +1,19 @@
+The team MCP gateway is starting in namespace {{ .Release.Namespace }}.
+
+  Dashboard:     {{ include "gateway.publicUrl" . }}
+  MCP endpoint:  {{ include "gateway.publicUrl" . }}/mcp
+
+Sign in as {{ .Values.gateway.adminEmail }}. The password was generated into a Secret:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "gateway.fullname" . }}-app -o jsonpath="{.data.admin-password}" | base64 -d
+
+{{- if and (not .Values.llm.apiKey) (not .Values.llm.existingSecret) }}
+
+The chat agent needs an LLM API key. If you have not set one yet:
+
+  helm upgrade {{ .Release.Name }} <chart> -n {{ .Release.Namespace }} --reuse-values --set llm.apiKey=YOUR_KEY
+{{- end }}
+
+Connect an MCP client with a key from the dashboard (API keys page):
+
+  claude mcp add --transport http urumi {{ include "gateway.publicUrl" . }}/mcp --header "Authorization: Bearer YOUR_KEY"

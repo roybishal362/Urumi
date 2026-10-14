@@ -1,0 +1,87 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullname := include "gateway.fullname" . -}}
+# One hostname for everything a person or an MCP client needs:
+#   /api          the dashboard's REST API      -> gateway backend
+#   /mcp          the single MCP endpoint       -> gateway backend
+#   /.well-known  OAuth discovery               -> gateway backend (answers 404:
+#                 this gateway uses API keys, and a client that gets a 401 looks
+#                 here before giving up)
+#   /             the dashboard's static files  -> dashboard
+# Serving the API and the dashboard from the same origin means the session
+# cookie is first-party and no cross-origin (CORS) setup is needed.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullname }}
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+  {{- $redirect := and .Values.ingress.tls.enabled .Values.ingress.tls.redirectHttp (eq .Values.ingress.className "traefik") }}
+  {{- if or .Values.ingress.annotations .Values.ingress.tls.clusterIssuer $redirect }}
+  annotations:
+    {{- with .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ . | quote }}
+    {{- end }}
+    {{- if $redirect }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ printf "%s-%s-https-redirect@kubernetescrd" .Release.Namespace $fullname }}
+    {{- end }}
+    {{- with .Values.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ .Values.gateway.host | quote }}
+      secretName: {{ default (printf "%s-tls" $fullname) .Values.ingress.tls.secretName }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.gateway.host | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  name: http
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  name: http
+          - path: /.well-known
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullname }}-dashboard
+                port:
+                  name: http
+{{- if and .Values.ingress.tls.enabled .Values.ingress.tls.redirectHttp (eq .Values.ingress.className "traefik") }}
+---
+# Sends plain http:// requests to https:// with a permanent redirect. Traefik
+# middleware, because Traefik is the ingress controller k3s ships with.
+# cert-manager's HTTP challenge uses its own Ingress, so it is not redirected.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $fullname }}-https-redirect
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+{{- end }}
+{{- end }}

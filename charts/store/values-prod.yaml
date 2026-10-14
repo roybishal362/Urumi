@@ -1,0 +1,56 @@
+# Production-like VPS (k3s). Same chart, different values: a real domain, TLS
+# from cert-manager, bigger volumes, images pulled from a registry.
+#
+# Replace example.com with your domain and point its A record at the VPS.
+store:
+  host: store.example.com
+  scheme: https
+  adminEmail: owner@example.com
+
+wordpress:
+  persistence:
+    size: 20Gi
+    # k3s ships local-path. Set a replicated class (for example longhorn) if
+    # the node's disk is not where you want store data to live.
+    storageClass: local-path
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+mariadb:
+  persistence:
+    size: 20Gi
+    storageClass: local-path
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+wooMcp:
+  image:
+    # Images come from a registry in production instead of `k3d image import`.
+    repository: ghcr.io/YOUR_GITHUB_USER/urumi-woo-mcp
+    tag: 0.1.0
+    pullPolicy: IfNotPresent
+  replicas: 2
+
+ingress:
+  className: traefik
+  tls:
+    enabled: true
+    secretName: store-tls
+    clusterIssuer: letsencrypt-prod
+    redirectHttp: true
+
+backup:
+  enabled: true
+  persistence:
+    size: 10Gi
+    storageClass: local-path

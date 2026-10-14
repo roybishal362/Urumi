@@ -1,0 +1,213 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- $fullname := include "store.fullname" . -}}
+# Everything in the store's namespace is closed by default, in both directions.
+# The policies below open exactly the paths the store needs:
+#
+#   ingress controller -> WordPress -> MariaDB
+#   gateway -> WooCommerce MCP server -> WordPress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-default-deny
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-mariadb
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "store.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mariadb
+  policyTypes:
+    - Ingress
+    - Egress
+  # Only this store's WordPress (and its nightly backup job) may open a
+  # database connection. No egress rules: the database never calls anything.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: wordpress
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: db-backup
+      ports:
+        - protocol: TCP
+          port: 3306
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-wordpress
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "store.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: wordpress
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Shoppers, through the ingress controller.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressController.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 80
+    # This store's own MCP server, calling the WooCommerce REST API.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: woo-mcp
+      ports:
+        - protocol: TCP
+          port: 80
+    # The `helm test` pod, which exists only while the test runs.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              urumi.dev/helm-test: "true"
+      ports:
+        - protocol: TCP
+          port: 80
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: mariadb
+      ports:
+        - protocol: TCP
+          port: 3306
+    {{- include "store.dnsEgress" . | nindent 4 }}
+    # The public internet, for plugin downloads and update checks. Private
+    # ranges are excluded, which keeps WordPress away from other namespaces,
+    # the node network and the cloud metadata address.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-woo-mcp
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "store.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: woo-mcp
+  policyTypes:
+    - Ingress
+    - Egress
+  # The only caller allowed is the gateway.
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.gateway.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.gateway.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8000
+  # The only destination allowed is this store's WordPress. It cannot reach the
+  # database, another store, or the internet.
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: wordpress
+      ports:
+        - protocol: TCP
+          port: 80
+    {{- include "store.dnsEgress" . | nindent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-helm-test
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "store.selectorLabels" . | nindent 6 }}
+      urumi.dev/helm-test: "true"
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "store.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: wordpress
+      ports:
+        - protocol: TCP
+          port: 80
+    {{- include "store.dnsEgress" . | nindent 4 }}
+{{- if .Values.ingress.tls.clusterIssuer }}
+---
+# cert-manager proves domain ownership by answering an HTTP challenge from a
+# short-lived pod in this namespace. Without this rule the default-deny policy
+# would block the ingress controller from reaching it, and no certificate
+# would ever be issued.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-acme-solver
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.ingressController.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.ingressController.podLabels | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8089
+{{- end }}
+{{- end }}

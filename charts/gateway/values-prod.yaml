@@ -1,0 +1,49 @@
+# Production-like VPS (k3s). Same chart, different values: a real domain, TLS
+# from cert-manager, more replicas, images pulled from a registry.
+#
+# Replace example.com with your domain and point its A record at the VPS.
+gateway:
+  host: gateway.example.com
+  scheme: https
+  adminEmail: owner@example.com
+  image:
+    repository: ghcr.io/YOUR_GITHUB_USER/urumi-gateway
+    tag: 0.1.0
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+dashboard:
+  image:
+    repository: ghcr.io/YOUR_GITHUB_USER/urumi-dashboard
+    tag: 0.1.0
+  replicas: 2
+
+postgres:
+  persistence:
+    size: 10Gi
+    storageClass: local-path
+
+demoServers:
+  image:
+    repository: ghcr.io/YOUR_GITHUB_USER/urumi-demo-mcp
+    tag: 0.1.0
+
+ingress:
+  className: traefik
+  tls:
+    enabled: true
+    secretName: gateway-tls
+    clusterIssuer: letsencrypt-prod
+    redirectHttp: true
+
+backup:
+  enabled: true
+  persistence:
+    size: 10Gi
+    storageClass: local-path

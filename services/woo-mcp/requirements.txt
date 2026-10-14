@@ -1,0 +1,5 @@
+mcp==2.3.0
+httpx2==2.13.1
+uvicorn==0.54.0
+# IANA timezone data, so the store's timezone resolves on slim base images.
+tzdata>=2025.1

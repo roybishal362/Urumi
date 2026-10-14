@@ -1,0 +1,17 @@
+Store "{{ .Release.Name }}" is being set up in namespace {{ .Release.Namespace }}.
+
+  Storefront:  {{ include "store.publicUrl" . }}
+  Admin:       {{ include "store.publicUrl" . }}/wp-admin
+
+First start takes a few minutes: WordPress is installed, then WooCommerce.
+Watch it with:
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "store.fullname" . }}-wordpress -c wp-cli -f
+
+Admin login ({{ .Values.store.adminUser }}):
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "store.fullname" . }}-wp-admin -o jsonpath="{.data.password}" | base64 -d
+
+The WooCommerce MCP server is internal only:
+
+  http://{{ include "store.fullname" . }}-woo-mcp.{{ .Release.Namespace }}.svc.cluster.local:8000/mcp

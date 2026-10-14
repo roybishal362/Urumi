@@ -1,0 +1,19 @@
+{{- /*
+With two or more MCP server replicas, keep at least one running while a node
+is drained. WordPress and MariaDB run one replica each (their volumes are
+ReadWriteOnce), so they get no budget: it would block draining altogether.
+*/ -}}
+{{- if gt (int .Values.wooMcp.replicas) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "store.fullname" . }}-woo-mcp
+  labels:
+    {{- include "store.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "store.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: woo-mcp
+{{- end }}

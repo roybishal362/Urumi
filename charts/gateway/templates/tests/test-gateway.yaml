@@ -1,0 +1,56 @@
+{{- $fullname := include "gateway.fullname" . -}}
+# `helm test gateway -n <namespace>` runs this pod once and reports pass or fail.
+# It checks the gateway is ready, refuses unauthenticated MCP requests, and that
+# the dashboard is served.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $fullname }}-test
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    urumi.dev/helm-test: "true"
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    {{- include "gateway.podSecurityContext" (dict "uid" 10001) | nindent 4 }}
+  containers:
+    - name: test
+      image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+      command:
+        - python
+        - -c
+        - |
+          import time, urllib.error, urllib.request
+
+          def status(url, data=None):
+              # Retry for a while: right after an upgrade the network policy
+              # that admits this pod may still be being applied.
+              for _ in range(10):
+                  try:
+                      return urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10).status
+                  except urllib.error.HTTPError as e:
+                      return e.code
+                  except OSError:
+                      time.sleep(2)
+              return None
+
+          gateway, dashboard = "http://{{ $fullname }}:8080", "http://{{ $fullname }}-dashboard:8080"
+          assert status(gateway + "/readyz") == 200, "gateway is not ready"
+          print("gateway is ready")
+          assert status(gateway + "/mcp", data=b"{}") == 401, "MCP endpoint did not demand an API key"
+          print("MCP endpoint refuses requests without an API key")
+          assert status(dashboard + "/healthz") == 200, "dashboard is not serving"
+          print("dashboard is serving")
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      securityContext:
+        {{- include "gateway.containerSecurityContext" . | nindent 8 }}

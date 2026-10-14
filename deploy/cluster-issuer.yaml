@@ -1,0 +1,20 @@
+# Let's Encrypt issuer for the VPS. Apply once, after installing cert-manager:
+#
+#   kubectl apply -f deploy/cluster-issuer.yaml
+#
+# The charts' production values reference it by name (ingress.tls.clusterIssuer).
+# Set the email address to yours before applying.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: you@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik

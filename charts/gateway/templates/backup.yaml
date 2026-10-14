@@ -1,0 +1,124 @@
+{{- if .Values.backup.enabled -}}
+{{- $fullname := include "gateway.fullname" . -}}
+# A nightly dump of the gateway's database (users, keys, servers, audit log),
+# kept on its own volume. Restore with:
+#   gunzip -c <file> | kubectl -n <ns> exec -i <release>-postgres-0 -- psql -U gateway -d gateway
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-backups
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-backup
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.backup.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.backup.persistence.size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $fullname }}-db-backup
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "gateway.labels" . | nindent 12 }}
+            app.kubernetes.io/component: db-backup
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext:
+            {{- include "gateway.podSecurityContext" (dict "uid" 70) | nindent 12 }}
+            fsGroup: 70
+          containers:
+            - name: dump
+              image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+              imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+              env:
+                # Read by pg_dump, so the password never appears in the process list.
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $fullname }}-app
+                      key: postgres-password
+                - name: KEEP
+                  value: {{ .Values.backup.keep | quote }}
+              command:
+                - sh
+                - -ec
+                - |
+                  name=/backups/gateway-$(date -u +%Y%m%d-%H%M%S).sql
+                  trap 'rm -f "$name.partial"' EXIT
+                  # Dump to a file first, not through a pipe, so a failed dump
+                  # fails the job instead of producing an empty archive.
+                  pg_dump -h {{ $fullname }}-postgres -U gateway -d gateway --no-owner > "$name.partial"
+                  # pg_dump writes this marker near the end; without it the dump is incomplete.
+                  tail -n 5 "$name.partial" | grep -q "PostgreSQL database dump complete" || { echo "dump is incomplete" >&2; exit 1; }
+                  gzip -c "$name.partial" > "$name.gz"
+                  rm -f "$name.partial"
+                  echo "wrote $name.gz ($(wc -c < "$name.gz") bytes)"
+                  # Rotate only after a good dump exists, so failures never cost old backups.
+                  ls -1t /backups/gateway-*.sql.gz | tail -n +$((KEEP + 1)) | xargs -r rm --
+                  echo "kept the newest $KEEP:"; ls -1t /backups/
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 32Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                {{- include "gateway.containerSecurityContext" . | nindent 16 }}
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ $fullname }}-backups
+            - name: tmp
+              emptyDir: {}
+{{- if .Values.networkPolicy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $fullname }}-db-backup
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: db-backup
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "gateway.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    {{- include "gateway.dnsEgress" . | nindent 4 }}
+{{- end }}
+{{- end }}

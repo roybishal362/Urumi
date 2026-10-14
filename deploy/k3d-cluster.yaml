@@ -1,0 +1,40 @@
+# Local cluster: one k3s node inside Docker, with the k3s load balancer published
+# on the host's ports 80/443 so Ingress hosts like store.localtest.me just work.
+#
+#   k3d cluster create --config deploy/k3d-cluster.yaml
+#
+# k3d runs real k3s, so the local cluster has the same Traefik ingress controller,
+# local-path storage class and NetworkPolicy controller as a k3s VPS.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: urumi
+servers: 1
+agents: 0
+image: rancher/k3s:v1.35.5-k3s1
+# Publish the Kubernetes API on loopback only, and write that address into the
+# kubeconfig. (On Docker Desktop k3d otherwise writes host.docker.internal,
+# which resolves to the LAN address and is often blocked by the firewall.)
+kubeAPI:
+  host: "127.0.0.1"
+  hostIP: "127.0.0.1"
+  hostPort: "6550"
+ports:
+  - port: 80:80
+    nodeFilters:
+      - loadbalancer
+  - port: 443:443
+    nodeFilters:
+      - loadbalancer
+options:
+  k3d:
+    wait: true
+    timeout: 180s
+  k3s:
+    extraArgs:
+      # Kubernetes 1.35 refuses to start on a cgroup v1 host unless told
+      # otherwise, and Docker Desktop on WSL2 can still be cgroup v1. On a
+      # cgroup v2 host this setting changes nothing.
+      - arg: --kubelet-arg=fail-cgroupv1=false
+        nodeFilters:
+          - server:*

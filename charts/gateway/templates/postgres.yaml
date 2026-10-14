@@ -1,0 +1,109 @@
+{{- $fullname := include "gateway.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-postgres
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+  selector:
+    {{- include "gateway.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-postgres
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ $fullname }}-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.labels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        # uid 70 is "postgres" in the alpine image.
+        {{- include "gateway.podSecurityContext" (dict "uid" 70) | nindent 8 }}
+        fsGroup: 70
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          env:
+            - name: POSTGRES_DB
+              value: gateway
+            - name: POSTGRES_USER
+              value: gateway
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-app
+                  key: postgres-password
+            # A subdirectory, so the data directory is one Postgres itself created and owns.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "gateway", "-d", "gateway"]
+            periodSeconds: 3
+            failureThreshold: 40
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "gateway", "-d", "gateway"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "gateway", "-d", "gateway"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          securityContext:
+            {{- include "gateway.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "gateway.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: postgres
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgres.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.persistence.size }}

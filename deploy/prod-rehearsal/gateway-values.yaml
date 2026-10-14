@@ -1,0 +1,26 @@
+# Applied on top of charts/gateway/values-prod.yaml for the local rehearsal.
+gateway:
+  host: gateway-prod.localtest.me
+  image:
+    repository: urumi/gateway
+  internalHostSuffixes:
+    - store-prod.svc.cluster.local
+
+dashboard:
+  image:
+    repository: urumi/dashboard
+
+demoServers:
+  image:
+    repository: urumi/demo-mcp
+
+seedServers:
+  woo:
+    url: http://store-woo-mcp.store-prod.svc.cluster.local:8000/mcp
+    tokenSecret:
+      namespace: store-prod
+
+ingress:
+  tls:
+    secretName: gateway-prod-tls
+    clusterIssuer: rehearsal-ca

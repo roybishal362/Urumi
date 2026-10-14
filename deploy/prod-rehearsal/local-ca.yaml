@@ -1,0 +1,36 @@
+# A local certificate authority for rehearsing the production setup on k3d.
+#
+# Let's Encrypt cannot issue certificates for *.localtest.me, so the rehearsal
+# uses cert-manager with a CA of its own. Everything else (the Ingress TLS
+# settings, the https URLs, Secure cookies) is exactly what production uses.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: rehearsal-selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: rehearsal-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: Urumi rehearsal CA
+  secretName: rehearsal-ca
+  duration: 2160h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: rehearsal-selfsigned
+    kind: ClusterIssuer
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: rehearsal-ca
+spec:
+  ca:
+    secretName: rehearsal-ca

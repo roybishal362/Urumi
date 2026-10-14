@@ -1,0 +1,18 @@
+# Local Kubernetes (k3d). *.localtest.me resolves to 127.0.0.1 in public DNS, so
+# no hosts-file edits are needed; k3d publishes the ingress on host port 80.
+store:
+  host: store.localtest.me
+  scheme: http
+
+wordpress:
+  persistence:
+    size: 2Gi
+
+mariadb:
+  persistence:
+    size: 2Gi
+
+ingress:
+  className: traefik
+  tls:
+    enabled: false

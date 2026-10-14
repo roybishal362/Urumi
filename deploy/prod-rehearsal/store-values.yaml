@@ -1,0 +1,18 @@
+# Applied on top of charts/store/values-prod.yaml for the local rehearsal.
+# Only what cannot be the same on a laptop changes: hostname, certificate
+# issuer, image source, and the gateway namespace the NetworkPolicy trusts.
+store:
+  host: store-prod.localtest.me
+
+wooMcp:
+  image:
+    repository: urumi/woo-mcp
+
+ingress:
+  tls:
+    secretName: store-prod-tls
+    clusterIssuer: rehearsal-ca
+
+networkPolicy:
+  gateway:
+    namespace: gateway-prod

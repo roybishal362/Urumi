@@ -1,0 +1,23 @@
+{{- /*
+With two or more replicas, keep at least one running while a node is drained
+for maintenance or an upgrade. With one replica a budget would block draining
+altogether, so none is created.
+*/ -}}
+{{- $fullname := include "gateway.fullname" . -}}
+{{- range $component, $replicas := dict "gateway" .Values.gateway.replicas "dashboard" .Values.dashboard.replicas }}
+{{- if gt (int $replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $component | eq "gateway" | ternary $fullname (printf "%s-%s" $fullname $component) }}
+  labels:
+    {{- include "gateway.labels" $ | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+{{- end }}
+{{- end }}
